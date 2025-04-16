@@ -27,7 +27,7 @@ int main()
 
     uv_idle_init(uv_default_loop(), &idler);
 
-    idler.data = (void*)"this is a public data...";
+    idler.data = (void*)"this is a public data..."; // 指定user_data
 
     printf("idle start, num = %ld\n", num);
     uv_idle_start(&idler, my_idle_cb);

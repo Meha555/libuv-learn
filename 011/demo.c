@@ -7,7 +7,9 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#if defined(__linux__)
 #include <unistd.h>
+#endif
 #include <uv.h>
 
 uv_loop_t *loop;

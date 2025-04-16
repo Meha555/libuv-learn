@@ -11,28 +11,27 @@
 
 typedef struct my_time{
     int64_t now;
+    uv_loop_t* loop;
 } my_time_t;
- 
 
 void my_timer_cb(uv_timer_t* handle)
 {
-    my_time_t * update_time;
+    my_time_t* update_time;
 
     update_time = (my_time_t*)handle->data;
 
     printf("timer callback running, time = %ld ...\n", update_time->now);
 
-    update_time->now = uv_now(uv_default_loop());
+    update_time->now = uv_now(update_time->loop);
 }
 
 int main() 
 {
     my_time_t time;
+    time.now = uv_now(uv_default_loop());
+    time.loop = uv_default_loop();
 
     uv_timer_t timer;
-
-    // time.now = uv_now(uv_default_loop());
-
     timer.data = (void*)&time;
 
     uv_timer_init(uv_default_loop(), &timer);

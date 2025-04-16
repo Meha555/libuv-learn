@@ -11,29 +11,31 @@
 
 int64_t num = 0;
 
+
 void my_idle_cb(uv_idle_t* handle)
 {
     num++;
     printf("idle callback\n");
     if (num >= 5) {
         printf("idle stop, num = %ld\n", num);
-        uv_stop(uv_default_loop());
+        // 这里停掉idle句柄，演示preparee的阻塞式polling，程序后续会卡住了
+        uv_idle_stop(handle);
     }
 }
 
-void my_prep_cb(uv_prepare_t *handle) 
+void my_prep_cb(uv_prepare_t *handle)
 {
     printf("prep callback\n");
 }
 
-int main() 
+int main()
 {
     uv_idle_t idler;
     uv_prepare_t prep;
 
     uv_idle_init(uv_default_loop(), &idler);
     uv_idle_start(&idler, my_idle_cb);
-    
+
     uv_prepare_init(uv_default_loop(), &prep);
     uv_prepare_start(&prep, my_prep_cb);
 

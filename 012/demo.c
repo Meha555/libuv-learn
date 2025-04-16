@@ -7,7 +7,11 @@
  */
 #include <stdio.h>
 #include <string.h>
+#if defined(__linux__)
 #include <unistd.h>
+#else
+#define STDOUT_FILENO 1
+#endif
 #include <uv.h>
 
 

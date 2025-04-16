@@ -1,5 +1,9 @@
 #include <stdio.h>
+#if defined(__linux__)
 #include <unistd.h>
+#else
+#define sleep Sleep
+#endif
 
 #include <uv.h>
 

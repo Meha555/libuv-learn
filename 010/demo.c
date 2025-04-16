@@ -5,6 +5,9 @@
  * @LastEditTime: 2020-04-23 16:26:46
  * @Description: the code belongs to jiejie, please keep the author information and source code according to the license.
  */
+#if !defined(__linux__)
+#error "This demo is not supported on this platform"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>

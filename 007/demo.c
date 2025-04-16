@@ -21,7 +21,7 @@ void my_idle_cb(uv_idle_t* handle)
     }
 }
 
-void my_check_cb(uv_check_t *handle) 
+void my_check_cb(uv_check_t *handle)
 {
     printf("check callback\n");
 }
@@ -33,7 +33,7 @@ int main()
 
     uv_idle_init(uv_default_loop(), &idler);
     uv_idle_start(&idler, my_idle_cb);
-    
+
     uv_check_init(uv_default_loop(), &check);
     uv_check_start(&check, my_check_cb);
 
