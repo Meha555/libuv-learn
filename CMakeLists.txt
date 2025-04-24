@@ -4,7 +4,13 @@ project(libuv-learn)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(libuv CONFIG REQUIRED)
+if(LINUX)
+    set(USING_APT TRUE)
+endif()
+
+if(NOT USING_APT)
+    find_package(libuv CONFIG REQUIRED)
+endif()
 
 # 遍历当前文件夹下的所有0开头的子文件夹
 file(GLOB SUBDIRS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} 0*)
@@ -23,7 +29,7 @@ foreach(SUBDIR ${SUBDIRS})
                 # 添加可执行文件
                 add_executable(${EXECUTABLE_NAME} ${FILE})
                 # 链接libuv库
-                target_link_libraries(${EXECUTABLE_NAME} PRIVATE $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>)
+                target_link_libraries(${EXECUTABLE_NAME} PRIVATE $<IF:$<BOOL:${USING_APT}>,uv,$<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>>)
             endforeach()
         endif()
     endif()
