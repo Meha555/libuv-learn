@@ -2,46 +2,49 @@
  * @Author: jiejie
  * @Github: https://github.com/jiejieTop
  * @Date: 2020-04-22 20:22:38
- * @LastEditTime: 2020-04-22 21:34:25
+ * @LastEditTime: 2020-04-23 16:26:46
  * @Description: the code belongs to jiejie, please keep the author information and source code according to the license.
  */
-#include <stdio.h>
-#if defined(__linux__)
-#include <unistd.h>
-#else
-#define sleep Sleep
+#if !defined(__linux__)
+#error "This demo is not supported on this platform"
 #endif
-
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <uv.h>
 
-void wake_entry(void *arg) 
+void signal_handler(uv_signal_t *handle, int signum)
 {
-    sleep(5);
-
-    printf("wake_entry running, wake async!\n");
-
-    uv_async_send((uv_async_t*)arg);
-
-    uv_stop(uv_default_loop());
+    printf("signal received: %d\n", signum);
+    uv_signal_stop(handle);
 }
 
-void my_async_cb(uv_async_t* handle)
+void thread1_entry(void *userp)
 {
-    printf("my async running!\n");
+    sleep(2);
+
+    kill(0, SIGUSR1);
 }
 
-int main() 
+
+void thread2_entry(void *userp)
 {
-    uv_thread_t wake;
-    uv_async_t async;
-
-    uv_async_init(uv_default_loop(), &async, my_async_cb);
-
-    uv_thread_create(&wake, wake_entry, &async);
-
+    uv_signal_t signal;
+    
+    uv_signal_init(uv_default_loop(), &signal);
+    uv_signal_start(&signal, signal_handler, SIGUSR1);
+    
     uv_run(uv_default_loop(), UV_RUN_DEFAULT);
+}
 
-    uv_thread_join(&wake);
+int main()
+{
+    uv_thread_t thread1, thread2;
 
+    uv_thread_create(&thread1, thread1_entry, NULL);
+    uv_thread_create(&thread2, thread2_entry, NULL);
+
+    uv_thread_join(&thread1);
+    uv_thread_join(&thread2);
     return 0;
 }

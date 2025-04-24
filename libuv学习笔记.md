@@ -74,6 +74,24 @@ typedef struct uv_random_s uv_random_t;
 
 >  Libuv handles are not movable. Pointers to handle structures passed to functions must remain valid for the duration of the requested operation. Take care when using stack allocated handles. 
 
+> 关于结构体类型强制转换：
+>
+> 在 C 语言中，结构体的内存布局是从第一个成员开始依次排列的。因此下面的强转是成立的：
+>
+> ```c
+> typedef struct {
+>     uv_write_t req;  // 第一个成员
+>     uv_buf_t buf;    // 第二个成员
+> } write_req_t;
+> 
+> write_req_t wr;
+> uv_write_t *wq = (uv_write_t*)(&wr);
+> ```
+>
+> 因为 `uv_write_t` 是 `write_req_t` 的第一个成员，因此首地址相同，因此按 `uv_write_t*` 位解释时能正确分割出第一个成员。
+>
+>  所以**在C语言中认为结构体第一个成员的类型是整个结构体类型的基类**
+
 ### 流程句柄
 
 *流程句柄是我起的名字，表示这类句柄是固定在事件循环的流程中的，且它们都不是在轮询(polling)那步处理的。*
@@ -116,7 +134,7 @@ libuv对系统信号进行的封装。如果创建了signal句柄并且start了�
 
 async句柄用于提供异步唤醒的功能， 比如在用户线程中唤醒主事件循环线程，并且触发对应的回调函数。
 
-从事件循环线程的处理过程可知，它在io循环时会进入阻塞状态，而阻塞的具体时间则通过计算得到，那么在某些情况下，我们想要唤醒事件循环线程，就可以通过ansyc去操作，比如当线程池的线程处理完事件后，执行的结果是需要交给事件循环线程的，这时就需要用到唤醒事件循环线程，当然方法也是很简单，调用一下 `uv_async_send()` 函数通知事件循环线程即可。libuv线程池中的线程就是利用这个机制和主事件循环线程通讯。
+从事件循环线程的处理过程可知，它在io循环时会进入阻塞状态，而阻塞的具体时间则通过计算得到，那么在某些情况下，我们想要唤醒事件循环线程，就可以通过ansyc去操作，比如当线程池的线程处理完事件后，执行的结果是需要交给事件循环线程的，这时就需要唤醒事件循环线程，当然方法也是很简单，调用一下 `uv_async_send()` 函数通知事件循环线程即可。libuv线程池中的线程就是利用这个机制和主事件循环线程通讯。
 
 #### 结构
 
@@ -134,7 +152,7 @@ struct uv_async_s {
 
 #### 实现
 
-`uv_async_t` 只有2个暴露的API：
+`uv_async_t` 只有2个暴露的API（没有 `uv_async_start()` 函数）：
 
 （1）初始化并激活
 
@@ -211,9 +229,139 @@ int uv_async_send(uv_async_t* handle) {
 }
 ```
 
+### stream句柄
+
+#### uv_stream_t
+
+>  [uv_stream_t — Stream handle - libuv documentation](https://docs.libuv.org/en/v1.x/stream.html) 
+
+`uv_stream_t` 句柄抽象了一个双工的通道，有3个实现类：`uv_tcp_t` 、`uv_pipe_t` 和 `uv_tty_t` 。
+
+```c
+struct uv_stream_s {
+  UV_HANDLE_FIELDS
+  UV_STREAM_FIELDS
+};
+#define UV_STREAM_FIELDS                                                      \
+  /* 等待写的字节数 */                                                        \
+  size_t write_queue_size;                                                    \
+  /* 分配内存的函数 */                                                        \
+  uv_alloc_cb alloc_cb;                                                       \
+  /* 读取完成时候执行的回调函数 */                                            \
+  uv_read_cb read_cb;                                                         \
+  /* private */                                                               \
+  UV_STREAM_PRIVATE_FIELDS
+#define UV_STREAM_PRIVATE_FIELDS   // linux平台为例                             \
+  uv_connect_t *connect_req;       // 建立连接的请求                             \
+  uv_shutdown_t *shutdown_req;     // 关闭连接的请求                             \
+  uv__io_t io_watcher;             // IO观察者                                 \
+  void* write_queue[2];            // 待写入数据的队列                           \
+  void* write_completed_queue[2];  // 已写入数据的队列                           \
+  uv_connection_cb connection_cb;  // 有新连接时的回调函数                        \
+  int delayed_error;               // 延时时的错误代码                           \
+  int accepted_fd;                 // 接收连接后产生的对端fd                      \
+  void* queued_fds;                // 排队中的fd队列                             \
+  UV_STREAM_PRIVATE_PLATFORM_FIELDS     // 目前为空                             \
+
+```
+
+##### 常用函数
+
+（1）`uv_shutdown`：关闭流的写端（读端未关闭），它会等待未完成的写操作，在关闭后调用回调。入参的 req 必须是没有 init 的 `uv_shutdown_t` 
+
+（2）`uv_listen`：监听客户端请求。`uv_stream_t` 必须是 `uv_tcp_t` 或 `uv_pipe_t` 。连接后调用回调
+
+（3）`uv_accept`：配合 `uv_listen` 来接收新来的连接。一般是在连接完成的回调中调用。没有回调
+
+（4）`uv_read_start`：连接成功后，异步读取对端的内容（相当于 `boost::asio::read()` ，是读取一些字节），读到后调用回调
+
+（5）`uv_read_stop` ：停止从对端读取数据，此后不再调用读完成回调。
+
+（6）`uv_write`：按顺序写入数据到对端。还有一个 `uv_write2` 可以向管道写数据。
+
+##### 实现
+
+`uv__stream_io()` 函数是 stream handle 的事件处理函数，它在 `uv__io_init()` 函数中就被注册了，在调用 `uv__stream_io()` 函数时，传递了事件循环对象、io 观察者对象、事件类型等信息。我们来看看stream handle是如何处理可读写事件的：
+
+- 通过 `container_of()` 宏获取 stream handle 的实例，其实是计算出来的。
+
+- 如果 `stream->connect_req` 存在，说明该 stream handle 需要进行连接，于是调用 `uv__stream_connect()` 函数请求建立连接。
+
+- 满足可读取数据的条件，调用 `uv__read()` 函数进行数据读取
+
+- 如果满足流结束条件 调用 `uv__stream_eof()` 进行相关处理。
+
+- 如果满足可写条件，调用 `uv__write()` 函数去写入数据，当然，待写入的数据会被放在 `stream->write_queue` 队列中。
+
+- 在写完数据后，调用 `uv__write_callbacks()` 函数去清除队列的数据，并通知应用层已经写完了。
+
+```c
+static void uv__stream_io(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
+  uv_stream_t* stream;
+
+  /* 获取 stream handle 的实例 */
+  stream = container_of(w, uv_stream_t, io_watcher);
+
+  /* 断言，判断是否满足类型 */
+  assert(stream->type == UV_TCP ||
+         stream->type == UV_NAMED_PIPE ||
+         stream->type == UV_TTY);
+  assert(!(stream->flags & UV_HANDLE_CLOSING));
+
+  if (stream->connect_req) {
+    /* 如果需要建立连接，则请求建立连接 */
+    uv__stream_connect(stream);
+    return;
+  }
+
+  /* 断言 */
+  assert(uv__stream_fd(stream) >= 0);
+
+  /* 满足读数据条件，进行数据读取 */
+  if (events & (POLLIN | POLLERR | POLLHUP))
+    uv__read(stream);
+
+  /* read_cb 可能会关闭 stream，此处判断一下是否需要关闭fd */
+  if (uv__stream_fd(stream) == -1)
+    return;  /* read_cb closed stream. */
+
+  /* 如果满足流结束条件 调用 uv__stream_eof() 进行相关处理。 */
+  if ((events & POLLHUP) &&
+      (stream->flags & UV_HANDLE_READING) &&
+      (stream->flags & UV_HANDLE_READ_PARTIAL) &&
+      !(stream->flags & UV_HANDLE_READ_EOF)) {
+    uv_buf_t buf = { NULL, 0 };
+    uv__stream_eof(stream, &buf);
+  }
+
+  if (uv__stream_fd(stream) == -1)
+    return;  /* read_cb closed stream. */
+
+  /* 如果有数据要写入，则调用uv__write()去写数据，写完了调用uv__write_callbacks()函数 */
+  if (events & (POLLOUT | POLLERR | POLLHUP)) {
+    uv__write(stream);
+    uv__write_callbacks(stream);
+
+    /* Write queue drained. */
+    if (QUEUE_EMPTY(&stream->write_queue))
+      uv__drain(stream);
+  }
+}
+```
+
+#### uv_tcp_t
+
+```
+
+```
+
+#### uv_pipe_t
+
+
+
 ### 线程句柄和进程句柄
 
-libuv为线程进行的跨平台封装。线程运行的函数签名是 `void (*entry)(void *arg)` 。
+libuv为线程进行的跨平台封装（非常好，这样C语言使用线程就方便了）。线程运行的函数签名是 `void (*entry)(void *arg)` 。
 
 ## 事件循环
 
@@ -232,11 +380,11 @@ libuv的事件循环用于对IO进行轮询，以便在IO就绪时执行相关�
 
 这张图很明确的表示了libuv中所有I/O的事件循环处理的过程，其实就是 `uv_run()` 函数执行的过程，它内部是一个while循环：
 
-1. 首先判断循环是否是处于活动状态，它主要是通过当前是否存在处于alive活动状态的句柄，如果句柄都没有了，那循环也就没有意义了，如果不存在则直接退出。
+1. 首先判断循环是否是处于活动状态，它主要是通过当前是否存在处于alive活动状态的句柄，**如果句柄都没有了，那循环也就没有意义了，如果不存在则直接退出**（和`boost::asio::io_context::run()`一样）。
 
 2. 开始倒计时，主要是维护所有句柄中的定时器。当某个句柄超时了，就会告知应用层已经超时了，就退出去或者重新加入循环中。
 
-3. 调用待处理的回调函数，如果有待处理的回调函数，则去处理它，如果没有就接着往下运行。
+3. 调用待处理的回调函数，如果有待处理的回调函数，则去处理它，如果没有就接着往下运行【注意这里，**其实是上一轮事件循环处理的IO事件的回调deferred到下一轮事件循环执行（和Boost.Asio一样，回调触发时是IO操作已经完成了**】。
 
 4. 执行空闲句柄的回调，反正它这个线程都默认会有空闲句柄的，这个空闲句柄会在每次循环中被执行。
 
@@ -433,3 +581,4 @@ int uv_run(uv_loop_t *loop, uv_run_mode mode) {
 }
 ```
 
+​	
