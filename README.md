@@ -13,5 +13,7 @@
 | 010 | async 异步句柄 | [【libuv高效编程】libuv学习超详细教程9——libuv async异步句柄解读](https://blog.csdn.net/jiejiemcu/article/details/105738484) |
 | 011 | process 进程句柄 | - |
 | 012 | tty 终端句柄 | - |
-| 013 | stream 流句柄 | [【libuv高效编程】libuv学习超详细教程10 —— libuv stream 流句柄解读](https://jiejie.blog.csdn.net/article/details/105825247)<br />[【libuv高效编程】libuv学习超详细教程11 —— libuv stream 流句柄解读](https://jiejie.blog.csdn.net/article/details/105964068) |
+| 013 | stream 流句柄(tcp) | [【libuv高效编程】libuv学习超详细教程10 —— libuv stream 流句柄解读](https://jiejie.blog.csdn.net/article/details/105825247)<br />[【libuv高效编程】libuv学习超详细教程11 —— libuv stream 流句柄解读](https://jiejie.blog.csdn.net/article/details/105964068) |
+| 014 | stream 流句柄(pipe) | - |
+| 015  | mutex 锁 | - |
 
