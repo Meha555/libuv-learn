@@ -115,7 +115,18 @@ libuv中有一个有意思的实现，所有idle、prepare以及check句柄相�
 
 ### timer句柄
 
+定时器句柄用于让回调函数在指定的时刻被事件循环调用。有单发和多发两种。
 
+- `uv_timer_init()` ：初始化
+- `uv_timer_start()` ：启动定时器。如果超时时间为0，则将在下个事件循环执行时执行绑定的回调（和Qt一样）。
+- `uv_timer_again()` ：停止定时器，如果定时器正在重复运行，则使用 repeat 作为超时时间重新启动定时器（相当于未指定超时时间采用的默认值）。如果计时器从未启动过，则返回 `UV_EINVAL`。
+
+- `uv_timer_set_repeat()` ：修改定时器的 repeat。
+
+**注意**：
+
+- 由于是事件循环负责维护时间戳和调用回调，因此 `uv_timer_t` 无法脱离 `uv_loop_t` 使用。
+- `uv_loop_t` 在执行定时器回调之前和等待 I/O 唤醒之后，会立即更新其缓存的 `uv_loop_t::time` 当前时间戳。
 
 ### signal句柄
 
@@ -134,7 +145,7 @@ libuv对系统信号进行的封装。如果创建了signal句柄并且start了�
 
 async句柄用于提供异步唤醒的功能， 比如在用户线程中唤醒主事件循环线程，并且触发对应的回调函数。
 
-从事件循环线程的处理过程可知，它在io循环时会进入阻塞状态，而阻塞的具体时间则通过计算得到，那么在某些情况下，我们想要唤醒事件循环线程，就可以通过ansyc去操作，比如当线程池的线程处理完事件后，执行的结果是需要交给事件循环线程的，这时就需要唤醒事件循环线程，当然方法也是很简单，调用一下 `uv_async_send()` 函数通知事件循环线程即可。libuv线程池中的线程就是利用这个机制和主事件循环线程通讯。
+从事件循环线程的处理过程可知，它在IO循环时会进入阻塞状态，而阻塞的具体时间则通过计算得到，那么在某些情况下，我们想要唤醒事件循环线程，就可以通过ansyc去操作，比如当线程池的线程处理完事件后，执行的结果是需要交给事件循环线程的，这时就需要唤醒事件循环线程，当然方法也是很简单，调用一下 `uv_async_send()` 函数通知事件循环线程即可。libuv线程池中的线程就是利用这个机制和主事件循环线程通讯。
 
 #### 结构
 
@@ -179,7 +190,7 @@ int uv_async_init(uv_loop_t* loop, uv_async_t* handle, uv_async_cb async_cb) {
 static int uv__async_start(uv_loop_t* loop) {
   int pipefd[2];
   int err;
-
+  // 避免重复初始化
   if (loop->async_io_watcher.fd != -1)
     return 0;
   // 创建一个用于事件通知的fd
@@ -190,12 +201,60 @@ static int uv__async_start(uv_loop_t* loop) {
   pipefd[0] = err;
   pipefd[1] = -1;
   // 用创建的用于事件通知的fd和回调函数uv__async_io初始化并启动async_io_watcher
-  // 从而在线程池中的线程调用uv_async_send向loop线程发送消息时，loop在poll io时执行uv__async_io来遍历async_handles队列，执行其中所有pending==1的uv_async_t句柄的回调函数
+  // 从而在线程池中的线程调用uv_async_send向loop线程发送消息时，loop在polling IO事件时执行uv__async_io来遍历async_handles队列，执行其中所有pending==1的uv_async_t句柄的回调函数
   uv__io_init(&loop->async_io_watcher, uv__async_io, pipefd[0]);
-  uv__io_start(loop, &loop->async_io_watcher, POLLIN); // 监听读就绪
-  loop->async_wfd = pipefd[1];
+  uv__io_start(loop, &loop->async_io_watcher, POLLIN); // 监听管道读端fd的读就绪
+  loop->async_wfd = pipefd[1]; // 保存管道写端的fd
 
   return 0;
+}
+
+static void uv__async_io(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
+  char buf[1024];
+  ssize_t r;
+  struct uv__queue queue;
+  struct uv__queue* q;
+  uv_async_t* h;
+  _Atomic int *pending;
+
+  assert(w == &loop->async_io_watcher);
+
+  for (;;) {
+    r = read(w->fd, buf, sizeof(buf));
+
+    if (r == sizeof(buf))
+      continue;
+
+    if (r != -1)
+      break;
+
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+      break;
+
+    if (errno == EINTR)
+      continue;
+
+    abort();
+  }
+
+  uv__queue_move(&loop->async_handles, &queue);
+  while (!uv__queue_empty(&queue)) {
+    q = uv__queue_head(&queue);
+    h = uv__queue_data(q, uv_async_t, queue);
+
+    uv__queue_remove(q);
+    uv__queue_insert_tail(&loop->async_handles, q);
+
+    /* Atomically fetch and clear pending flag */
+    pending = (_Atomic int*) &h->pending;
+    if (atomic_exchange(pending, 0) == 0)
+      continue;
+
+    if (h->async_cb == NULL)
+      continue;
+	// 执行与uv_async_t绑定的回调函数
+    h->async_cb(h);
+  }
 }
 ```
 
@@ -226,6 +285,37 @@ int uv_async_send(uv_async_t* handle) {
   atomic_fetch_add(busy, -1);
 
   return 0;
+}
+
+static void uv__async_send(uv_loop_t* loop) {
+  const void* buf;
+  ssize_t len;
+  int fd;
+  int r;
+
+  buf = "";
+  len = 1;
+  fd = loop->async_wfd;
+
+  if (fd == -1) {
+    static const uint64_t val = 1;
+    buf = &val;
+    len = sizeof(val);
+    fd = loop->async_io_watcher.fd;  /* eventfd */
+  }
+
+  do
+    r = write(fd, buf, len); // 写入一个空字符串来让fd读就绪，这样io观察者就会polling到
+  while (r == -1 && errno == EINTR);
+
+  if (r == len)
+    return;
+
+  if (r == -1)
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+      return;
+
+  abort();
 }
 ```
 
@@ -369,7 +459,7 @@ libuv的事件循环用于对IO进行轮询，以便在IO就绪时执行相关�
 
 **注意**：
 
-- **是"one loop per thread"的，因此必须关联到单个线程上，且使用非阻塞套接字。**
+- **是"one loop per thread"的，因此必须关联到单个线程上，且使用非阻塞套接字。**【因此 `uv_loop_t` 相关的API都不是线程安全的，不应该跨线程使用 `uv_loop_t`】
 
 - libuv中文件操作是可以异步执行的（启动子线程），而网络IO总是同步的（单线程执行）
 - 对于文件I/O的操作，由于平台并未对文件I/O提供轮询机制，libuv通过线程池的方式阻塞他们，每个I/O将对应产生一个线程，并在线程中进行阻塞，当有数据可操作的时候解除阻塞，进而进行回调处理，因此libuv将维护一个线程池，线程池中可能创建了多个线程并阻塞它们。（文件操作不会是高并发的，所以这么做没问题）
@@ -408,7 +498,7 @@ libuv的事件循环用于对IO进行轮询，以便在IO就绪时执行相关�
 9. 在超时后更新下一次的循环时间，前提是通过 `UV_RUN_DEFAULT` 模式去运行这个循环。一共有3种运行模式：
 
    - 默认模式 `UV_RUN_DEFAULT`：运行事件循环，直到不再有活动的和引用的句柄或请求为止。
-   - 单次阻塞模式 `UV_RUN_ONCE`：轮询一次I/O，如果没有待处理的回调，则进入阻塞状态，完成处理后返回零，不继续运行事件循环。
+   - 单次阻塞模式 `UV_RUN_ONCE`：轮询一次I/O，如果没有待处理的回调，则进入阻塞状态。完成处理后（不再有活动的和引用的句柄或请求为止）返回零，不继续运行事件循环。
    - 单次不阻塞模式 `UV_RUN_NOWAIT`：对I/O进行一次轮询，但如果没有待处理的回调，则不会阻塞。
 
 ### uv_loop_t
@@ -512,17 +602,125 @@ uv_loop_t* uv_default_loop(void) {
 
 > [Meha555/libuv-learn: libuv系列教程的配套代码，从0到深度了解libuv的框架与使用。](https://github.com/Meha555/libuv-learn) 
 
+（1）`uv_loop_init()` ：默认初始化 `uv_loop_t`
 
+```c
+int uv_loop_init(uv_loop_t* loop) {
+  uv__loop_internal_fields_t* lfields;
+  void* saved_data;
+  int err;
+
+  /* 清空数据 */
+  saved_data = loop->data;
+  memset(loop, 0, sizeof(*loop));
+  loop->data = saved_data;
+
+  lfields = (uv__loop_internal_fields_t*) uv__calloc(1, sizeof(*lfields));
+  if (lfields == NULL)
+    return UV_ENOMEM;
+  loop->internal_fields = lfields;
+
+  err = uv_mutex_init(&lfields->loop_metrics.lock);
+  if (err)
+    goto fail_metrics_mutex_init;
+  memset(&lfields->loop_metrics.metrics,
+         0,
+         sizeof(lfields->loop_metrics.metrics));
+  /* 初始化定时器堆，初始化工作队列、空闲队列、各种队列 */
+  heap_init((struct heap*) &loop->timer_heap);
+  uv__queue_init(&loop->wq);
+  uv__queue_init(&loop->idle_handles);
+  uv__queue_init(&loop->async_handles);
+  uv__queue_init(&loop->check_handles);
+  uv__queue_init(&loop->prepare_handles);
+  uv__queue_init(&loop->handle_queue);  /* 这个队列很重要，对于libuv中其他的 handle 在初始化后都会被放到此队列中 */
+  /* 初始化I/O观察者相关的内容，初始化处于活跃状态的观察者句柄计数、请求计数、文件描述符等为0 */
+  loop->active_handles = 0;
+  loop->active_reqs.count = 0;
+  loop->nfds = 0;
+  loop->watchers = NULL;
+  loop->nwatchers = 0;
+  /* 初始化挂起的I/O观察者队列，挂起的I/O观察者会被插入此队列延迟处理 */
+  uv__queue_init(&loop->pending_queue);
+  /* 初始化 I/O观察者队列，所有初始化后的I/O观察者都会被插入此队列 */
+  uv__queue_init(&loop->watcher_queue);
+
+  loop->closing_handles = NULL;
+  /* 初始化时间，获取系统当前的时间 */
+  uv__update_time(loop);
+  loop->async_io_watcher.fd = -1;
+  loop->async_wfd = -1;
+  loop->signal_pipefd[0] = -1;
+  loop->signal_pipefd[1] = -1;
+  loop->backend_fd = -1;
+  loop->emfile_fd = -1;
+
+  loop->timer_counter = 0;
+  loop->stop_flag = 0;
+  /* 初始化平台、linux Windows等 */
+  err = uv__platform_loop_init(loop);
+  if (err)
+    goto fail_platform_init;
+  /* 初始化信号 */
+  uv__signal_global_once_init();
+  err = uv__process_init(loop);
+  if (err)
+    goto fail_signal_init;
+  uv__queue_init(&loop->process_handles);
+  /* 初始化线程读写锁 */
+  err = uv_rwlock_init(&loop->cloexec_lock);
+  if (err)
+    goto fail_rwlock_init;
+  /* 初始化线程互斥锁 */
+  err = uv_mutex_init(&loop->wq_mutex);
+  if (err)
+    goto fail_mutex_init;
+
+  err = uv_async_init(loop, &loop->wq_async, uv__work_done);
+  if (err)
+    goto fail_async_init;
+
+  uv__handle_unref(&loop->wq_async);
+  loop->wq_async.flags |= UV_HANDLE_INTERNAL;
+
+  return 0;
+
+fail_async_init:
+  uv_mutex_destroy(&loop->wq_mutex);
+
+fail_mutex_init:
+  uv_rwlock_destroy(&loop->cloexec_lock);
+
+fail_rwlock_init:
+  uv__signal_loop_cleanup(loop);
+
+fail_signal_init:
+  uv__platform_loop_delete(loop);
+
+fail_platform_init:
+  uv_mutex_destroy(&lfields->loop_metrics.lock);
+
+fail_metrics_mutex_init:
+  uv__free(lfields);
+  loop->internal_fields = NULL;
+
+  uv__free(loop->watchers);
+  loop->nwatchers = 0;
+  return err;
+}
+```
+
+（2）执行事件循环。这个函数不可重入，所以不要在回调中调用，防止同一线程内重复调用。
 
 ```c
 int uv_run(uv_loop_t *loop, uv_run_mode mode) {
   DWORD timeout;
   int r;
   int can_sleep;
-
+  /* handle保活处理 */
   r = uv__loop_alive(loop);
   if (!r)
-    uv_update_time(loop);
+    uv_update_time(loop); // 更新loop->time（Update the event loop’s concept of “now”.）
 
   /* Maintain backwards compatibility by processing timers before entering the
    * while loop for UV_RUN_DEFAULT. Otherwise timers only need to be executed
@@ -539,14 +737,15 @@ int uv_run(uv_loop_t *loop, uv_run_mode mode) {
     uv__process_reqs(loop);
     uv__idle_invoke(loop);
     uv__prepare_invoke(loop);
-
+	/* 计算要阻塞的时间 */
     timeout = 0;
     if ((mode == UV_RUN_ONCE && can_sleep) || mode == UV_RUN_DEFAULT)
       timeout = uv_backend_timeout(loop);
 
     uv__metrics_inc_loop_count(loop);
-
+	/* 开始polling阻塞轮询 */
     uv__poll(loop, timeout);
+    /* 程序执行到这里表示被唤醒了，被唤醒的原因可能是I/O可读可写、或者超时了，检查handle是否可以操作 */
 
     /* Process immediate callbacks (e.g. write_cb) a small fixed number of
      * times to avoid loop starvation.*/
@@ -563,7 +762,7 @@ int uv_run(uv_loop_t *loop, uv_run_mode mode) {
     uv__check_invoke(loop);
     uv__process_endgames(loop);
 
-    uv_update_time(loop);
+    uv_update_time(loop); // 更新loop->time（Update the event loop’s concept of “now”.）
     uv__run_timers(loop);
 
     r = uv__loop_alive(loop);
@@ -581,4 +780,53 @@ int uv_run(uv_loop_t *loop, uv_run_mode mode) {
 }
 ```
 
-​	
+（3）`uv_stop` 要求事件循环在下个循环执行前停止。
+
+```c
+void uv_stop(uv_loop_t* loop) {
+  loop->stop_flag = 1; // 在uv_run中while条件就会检查这个stop_flag
+}
+```
+
+（4）`uv_loop_close` 释放 `uv_loop_t` 的内部资源。只能在事件循环已经结束且所有handle和request都已经关闭时调用，否则返回 `UV_EBUSY` 。调用后用户可以释放为 `uv_loop_t` 分配的内存（比如 `user_data`、堆上分配的 `uv_loop_t` 自身）。
+
+```c
+int uv_loop_close(uv_loop_t* loop) {
+  struct uv__queue* q;
+  uv_handle_t* h;
+#ifndef NDEBUG
+  void* saved_data;
+#endif
+
+  if (uv__has_active_reqs(loop))
+    return UV_EBUSY;
+
+  uv__queue_foreach(q, &loop->handle_queue) {
+    h = uv__queue_data(q, uv_handle_t, handle_queue);
+    if (!(h->flags & UV_HANDLE_INTERNAL))
+      return UV_EBUSY;
+  }
+
+  uv__loop_close(loop);
+
+#ifndef NDEBUG
+  saved_data = loop->data;
+  memset(loop, -1, sizeof(*loop));
+  loop->data = saved_data;
+#endif
+  if (loop == default_loop_ptr)
+    default_loop_ptr = NULL;
+
+  return 0;
+}
+```
+
+（5）`uv_now` 通过事件循环获取当前的毫秒数。
+
+```c
+uint64_t uv_now(const uv_loop_t* loop) {
+  return loop->time; // time成员在单次事件循环每次开始时就会更新
+}
+```
+
+（6）`uv_update_time` 更新 `uv_loop_t::time` 成员。libuv 在事件循环开始时缓存当前时间戳，以减少与时间相关的系统调用次数。一般情况不需要调用这个函数，但是如果有回调执行了很长时间，那么就有必要调用一下来更新时间。
