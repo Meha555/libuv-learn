@@ -22,15 +22,19 @@ libuv实际上是一个抽象层：
 
 libuv的实现是一个很经典生产者-消费者模型。libuv在整个生命周期中，每一次循环都执行每个阶段（phase）维护的任务队列。逐个执行节点里的回调，在回调中，不断生产新的任务，从而不断驱动libuv。
 
+注意：**libuv 里多数传入回调函数的 API 是异步的，但不能绝对地认为所有这类 API 都是异步的，需要根据具体的 API 文档和实现来判断**。
+
 ## 句柄和请求
 
 **句柄和请求在libuv里面既起到了抽象的作用，也起到了为事件循环统一事件源的作用**。
 
-Handle：一个句柄表示一个可用的资源（fd、socket、timer、进程），比如一个TCP连接。句柄的生命周期应当与所表示的资源相同。
+- **Handle**：一个句柄表示一个可用的资源（fd、socket、timer、进程），比如一个TCP连接。句柄的生命周期应当与所表示的资源相同。
 
-Request：一个请求表示一个操作的开始，并在得到应答时完成请求。因此请求的生命周期是短暂的，通常只维持在一个回调函数的时间。请求通常对应着在句柄上的IO操作（如在TCP连接中发送数据）或不在句柄上操作（获取本机地址）。
+- **Request**：一个请求表示一个操作的开始，并在得到应答时完成请求。因此请求的生命周期是短暂的，**通常只维持在一个回调函数的时间（所以应该在回调函数里面释放申请的内存）**。请求通常对应着在句柄上的IO操作（如在TCP连接中发送数据）或不在句柄上操作（获取本机地址）。
 
 > 可以理解handle为xcb_xxx_t，而request为xcb_cookie_t
+
+约定：以下本文将统称句柄和请求为句柄。两者不再区分。
 
 ```c
 /* Handle types. */
@@ -92,6 +96,35 @@ typedef struct uv_random_s uv_random_t;
 >
 >  所以**在C语言中认为结构体第一个成员的类型是整个结构体类型的基类**
 
+#### 句柄相关的基本操作
+
+> https://docs.libuv.org/en/v1.x/handle.html
+
+最常用的 `uv_close()` ：关闭句柄。必须在句柄的内存被释放前调用，然后句柄的内存应该在 `close_cb` 回调中释放（所以在没有资源需要释放的情况下 `close_cb` 可以填 `NULL`）。
+
+注意：
+- 官网文档有一句话：*对于"In-progress requests"如 `uv_connect_t`、`uv_write_t` 等，**请求会被取消并调用各自对应的回调，并携带错误 `UV_ECANCELED`**（注意这种情况不要重复释放内存）。*但事实上查阅 `uv_close()` 的实现，发现只有 `uv_tcp_t/uv_named_pipe_t/uv_tty_t/uv_udp_t/uv_poll_t/uv_timer_t/uv_prepare_t/uv_check_t/uv_idle_t/uv_async_t/uv_process_t/uv_fs_event_t/uv_fs_poll_t` 句柄才能使用这个函数，否则 abort 。
+`
+- 取消句柄的 `uv_cancel()` 函数只适用于 `uv_fs_t/uv_geneaddrinfo_t/uv_getnameinfo_t/uv_work_t/uv_random_t` 请求，否则返回 `UV_EINVAL` 。
+
+#### 句柄的激活
+
+句柄的*active*状态：
+
+- 对于 `uv_async_t` 句柄，其初始化时就自动激活了，直到 `uv_close()` 被调用才取消激活。
+
+- 对于 `uv_pipe_t\uv_tcp_t` 等于I/O相关的句柄，是读就绪/写就绪（读写数据、连接和接受连接）时激活。
+
+- `uv_check_t\uv_idle_t\uv_timer_t` 等具有 `uv_xxx_start()` 函数的句柄，是在调用这个函数时才激活；调用 `uv_xxx_stop()` 时会取消激活。
+
+#### 句柄引用计数
+
+句柄有 `uv_ref()` 和 `uv_unref()` 的操作，并且这两个操作都是幂等的，重复引用和取消引用都只产生一次影响（**因此句柄的引用计数只会是0或1，这种不采用counter的设计就是为了保证幂等性**）。
+
+句柄会在被*active*时引用，对应的事件触发或者stop时解引用。
+
+默认情况下事件循环会一直运行，直到已经没有*active*和*referenced*的句柄才停止。开发者可以通过对句柄进行*unreferencing*来强制让事件循环提前终止，比如先调用 `uv_timer_start()` 后又调用 `uv_unref()` 。
+
 ### 流程句柄
 
 *流程句柄是我起的名字，表示这类句柄是固定在事件循环的流程中的，且它们都不是在轮询(polling)那步处理的。*
@@ -110,7 +143,6 @@ libuv中有一个有意思的实现，所有idle、prepare以及check句柄相�
 
 - `uv_idle_t` 会在每次循环时运行一次绑定的回调，在 `uv_prepare_t` 之前；只要有一个 idle 句柄处于活跃状态，那么事件循环就不会进入阻塞状态（即零超时轮询）。所以 idle 句柄一般用于执行一些心跳、低优先级的任务。
 - `uv_prepare_t` 会在每次循环时运行一次绑定的回调，在轮询 I/O 之前；相当于前处理钩子。
-
 - `uv_check_t` 会在每次循环时运行一次绑定的回调，在轮询 I/O 之后；相当于后处理钩子。
 
 ### timer句柄
@@ -120,7 +152,6 @@ libuv中有一个有意思的实现，所有idle、prepare以及check句柄相�
 - `uv_timer_init()` ：初始化
 - `uv_timer_start()` ：启动定时器。如果超时时间为0，则将在下个事件循环执行时执行绑定的回调（和Qt一样）。
 - `uv_timer_again()` ：停止定时器，如果定时器正在重复运行，则使用 repeat 作为超时时间重新启动定时器（相当于未指定超时时间采用的默认值）。如果计时器从未启动过，则返回 `UV_EINVAL`。
-
 - `uv_timer_set_repeat()` ：修改定时器的 repeat。
 
 **注意**：
@@ -139,7 +170,6 @@ libuv对系统信号进行的封装。如果创建了signal句柄并且start了�
 - 通过libuv处理 `SIGBUS`、`SIGFPE`、`SIGILL` 或 `SIGSEGV` 会导致未定义的行为。
 - libuv的信号与平台的信号基本上是一样的，也就是说信号可以从系统中其他进程发出。
 - libuv的信号依赖管道，libuv会申请一个管道， 用于其他进程（libuv事件循环进程或fork出来的进程）和libuv事件循环进程通信 。 然后往libuv事件循环的的io观察者队列注册一个观察者，这其实就是观察这个管道是否可读，libuv在轮询I/O的阶段会把观察者加到`epoll`中。io观察者里保存了管道读端的文件描述符 `loop->signal_pipefd[0]` 和回调函数 `uv__signal_event`。 
-
 
 ### async句柄
 
@@ -459,7 +489,7 @@ libuv的事件循环用于对IO进行轮询，以便在IO就绪时执行相关�
 
 **注意**：
 
-- **是"one loop per thread"的，因此必须关联到单个线程上，且使用非阻塞套接字。**【因此 `uv_loop_t` 相关的API都不是线程安全的，不应该跨线程使用 `uv_loop_t`】
+- **是"one loop per thread"的，因此必须关联到单个线程上，且使用非阻塞套接字。【因此 `uv_loop_t` 相关的API都不是线程安全的，不应该跨线程使用 `uv_loop_t`】**
 
 - libuv中文件操作是可以异步执行的（启动子线程），而网络IO总是同步的（单线程执行）
 - 对于文件I/O的操作，由于平台并未对文件I/O提供轮询机制，libuv通过线程池的方式阻塞他们，每个I/O将对应产生一个线程，并在线程中进行阻塞，当有数据可操作的时候解除阻塞，进而进行回调处理，因此libuv将维护一个线程池，线程池中可能创建了多个线程并阻塞它们。（文件操作不会是高并发的，所以这么做没问题）

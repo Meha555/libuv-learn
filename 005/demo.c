@@ -6,7 +6,6 @@
  * @Description: the code belongs to jiejie, please keep the author information and source code according to the license.
  */
 #include <stdio.h>
-#include <stdlib.h>
 #include <uv.h>
 
 typedef struct my_time{
@@ -20,13 +19,21 @@ void my_timer_cb(uv_timer_t* handle)
 
     update_time = (my_time_t*)handle->data;
 
-    printf("timer callback running, time = %ld ...\n", update_time->now);
+    printf("timer callback running, time = %lld ...\n", update_time->now);
 
     update_time->now = uv_now(update_time->loop);
 }
 
-int main() 
+void signal_cb(int sig)
 {
+    printf("received sig = %d, stopping event loop\n", sig);
+    uv_stop(uv_default_loop());
+}
+
+int main()
+{
+    signal(SIGINT, signal_cb);
+
     my_time_t time;
     time.now = uv_now(uv_default_loop());
     time.loop = uv_default_loop();
@@ -38,7 +45,5 @@ int main()
 
     uv_timer_start(&timer, my_timer_cb, 0, 1000);
 
-    uv_run(uv_default_loop(), UV_RUN_DEFAULT);
-
-    return 0;
+    return uv_run(uv_default_loop(), UV_RUN_DEFAULT);
 }

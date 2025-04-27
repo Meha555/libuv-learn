@@ -30,17 +30,17 @@ void thread1_entry(void *userp)
 void thread2_entry(void *userp)
 {
     uv_signal_t signal;
-    
+
     uv_signal_init(uv_default_loop(), &signal);
     uv_signal_start(&signal, signal_handler, SIGUSR1);
-    
+
     uv_run(uv_default_loop(), UV_RUN_DEFAULT);
 }
 
 int main()
 {
     uv_thread_t thread1, thread2;
-
+    // 线程1发送信号，线程2接收信号
     uv_thread_create(&thread1, thread1_entry, NULL);
     uv_thread_create(&thread2, thread2_entry, NULL);
 

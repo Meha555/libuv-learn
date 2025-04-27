@@ -16,4 +16,5 @@
 | 013 | stream 流句柄(tcp) | [【libuv高效编程】libuv学习超详细教程10 —— libuv stream 流句柄解读](https://jiejie.blog.csdn.net/article/details/105825247)<br />[【libuv高效编程】libuv学习超详细教程11 —— libuv stream 流句柄解读](https://jiejie.blog.csdn.net/article/details/105964068) |
 | 014 | stream 流句柄(pipe) | - |
 | 015  | mutex 锁 | - |
+| 016  | uv_pipe_t 连接超时取消 | - |
 

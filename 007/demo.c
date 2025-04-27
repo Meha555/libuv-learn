@@ -16,7 +16,7 @@ void my_idle_cb(uv_idle_t* handle)
     num++;
     printf("idle callback\n");
     if (num >= 5) {
-        printf("idle stop, num = %ld\n", num);
+        printf("idle stop, num = %lld\n", num);
         uv_stop(uv_default_loop());
     }
 }
