@@ -4,7 +4,9 @@
 >
 >  [设计摘要 — libuv documentation](https://libuv-docs-chinese.readthedocs.io/zh/latest/design.html) 
 >
->  [libuv高效编程__杰杰_的博客-CSDN博客](https://blog.csdn.net/jiejiemcu/category_9918060.html) 
+>  [libuv高效编程__杰杰_的博客-CSDN博客](https://blog.csdn.net/jiejiemcu/category_9918060.html)
+>
+>   [libuv漫谈之线程 - 知乎](https://zhuanlan.zhihu.com/p/25973650) 
 
 ## libuv概述
 

@@ -1,10 +1,4 @@
 #include <stdio.h>
-#if defined(__linux__)
-#include <unistd.h>
-#else
-#define sleep Sleep
-#endif
-
 #include <uv.h>
 
 void hare_entry(void *arg) 
@@ -12,7 +6,7 @@ void hare_entry(void *arg)
     int track_len = *((int *) arg);
     while (track_len) {
         track_len--;
-        sleep(1);
+        uv_sleep(1000);
         printf("hare ran another step\n");
     }
     printf("hare done running!\n");
@@ -25,7 +19,7 @@ void tortoise_entry(void *arg)
     {
         track_len--;
         printf("tortoise ran another step\n");
-        sleep(3);
+        uv_sleep(3000);
     }
     printf("tortoise done running!\n");
 }

@@ -6,11 +6,6 @@
  * @Description: the code belongs to jiejie, please keep the author information and source code according to the license.
  */
 #include <stdio.h>
-#if defined(__linux__)
-#include <unistd.h>
-#else
-#define sleep Sleep
-#endif
 
 #include <uv.h>
 
@@ -27,7 +22,7 @@ void async_closed_cb(uv_handle_t* handle)
 
 void wake_entry(void *arg)
 {
-    sleep(5);
+    uv_sleep(5000);
 
     printf("wake_entry running, wake async!\n");
 
