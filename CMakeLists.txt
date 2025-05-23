@@ -4,13 +4,7 @@ project(libuv-learn)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(LINUX)
-    set(USING_APT TRUE)
-endif()
-
-if(NOT USING_APT)
-    find_package(libuv CONFIG REQUIRED)
-endif()
+find_package(libuv REQUIRED)
 
 # 读取 .gitignore 文件内容
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/.gitignore GITIGNORE_CONTENT)
@@ -36,7 +30,7 @@ foreach(SUBDIR ${SUBDIRS})
                 # 添加可执行文件
                 add_executable(${EXECUTABLE_NAME} ${FILE})
                 # 链接 libuv 库
-                target_link_libraries(${EXECUTABLE_NAME} PRIVATE $<IF:$<BOOL:${USING_APT}>,uv,$<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>>)
+                target_link_libraries(${EXECUTABLE_NAME} PRIVATE $<IF:$<BOOL:${WIN32}>,$<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>,uv>)
             endforeach()
         endif()
     endif()

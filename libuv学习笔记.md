@@ -485,6 +485,25 @@ static void uv__stream_io(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
 
 libuv为线程进行的跨平台封装（非常好，这样C语言使用线程就方便了）。线程运行的函数签名是 `void (*entry)(void *arg)` 。
 
+### 线程池
+
+libuv 提供了一个全局线程池（在所有 `uv_loop` 中共享），可用于运行用户代码并在循环线程中收到通知。此线程池在内部用于运行所有文件系统操作，以及 getaddrinfo 和 getnameinfo 请求。
+
+> 事实上一个程序应该只有一个线程池（多了也没啥用），所以libuv的这个线程池暴露出来给开发者用。
+
+使用以下数据结构和函数来操作：
+
+- `uv_work_t` ：任务request类型
+- `void (*uv_work_cb)(uv_work_t *req)` ：工作任务函数，在线程池中执行
+- `void (*uv_after_work_cb)(uv_work_t *req, int status)` ：任务完成回调函数，在主线程（事件循环所在线程）执行
+- `uv_queue_work()` ：向线程池中投递一个任务
+- `uv_cancel()` ：取消任务执行，会使得任务完成回调携带 `UV_ECANCELED`
+
+**注意**：
+
+- 线程池是延迟初始化的（第一次使用它时才预分配并创建线程，这和spdlog的相反）
+- 线程池中任务的执行需要自行保证线程安全
+
 ## 事件循环
 
 libuv的事件循环用于对IO进行轮询，以便在IO就绪时执行相关的操作和回调。
