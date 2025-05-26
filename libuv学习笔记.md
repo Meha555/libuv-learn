@@ -152,7 +152,7 @@ libuv中有一个有意思的实现，所有idle、prepare以及check句柄相�
 定时器句柄用于让回调函数在指定的时刻被事件循环调用。有单发和多发两种。
 
 - `uv_timer_init()` ：初始化
-- `uv_timer_start()` ：启动定时器。如果超时时间为0，则将在下个事件循环执行时执行绑定的回调（和Qt一样）。
+- `uv_timer_start(uv_timer_t *handle, uv_timer_cb cb, uint64_t timeout, uint64_t repeat)` ：启动定时器。如果 `timeout` 为0，则将在下个事件循环执行时执行绑定的回调（和Qt一样）。如果 `repeat` 不为0，则先在 `timeout` 时间后执行一次回调，然后每隔 `repeat` 时间执行一次回调。
 - `uv_timer_again()` ：停止定时器，如果定时器正在重复运行，则使用 repeat 作为超时时间重新启动定时器（相当于未指定超时时间采用的默认值）。如果计时器从未启动过，则返回 `UV_EINVAL`。
 - `uv_timer_set_repeat()` ：修改定时器的 repeat。
 
@@ -872,7 +872,7 @@ int uv_loop_close(uv_loop_t* loop) {
 }
 ```
 
-（5）`uv_now` 通过事件循环获取当前的毫秒数。
+（5）`uv_now` 通过事件循环获取当前的毫秒数，`uv_hrtime` 获取纳秒数。后者不需要传入loop参数
 
 ```c
 uint64_t uv_now(const uv_loop_t* loop) {
