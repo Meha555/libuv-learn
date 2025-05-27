@@ -18,7 +18,7 @@ int main()
 
     printf("quit...\n");
 
-    uv_loop_close(loop);
+    uv_loop_close(loop); // 如果loop是uv_default_loop()，也需要uv_loop_close，但是不要free
     free(loop);
     return 0;
 }
