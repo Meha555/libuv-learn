@@ -9,7 +9,7 @@ void worker1(void *arg) {
     uv_mutex_lock(&mutex);
     printf("waiting for num > 2\n");
     while (num <= 2) {
-      uv_cond_wait(&cond, &mutex);
+      uv_cond_timedwait(&cond, &mutex, 0);
     }
     printf("num is %d\n",num);
     num--;
@@ -23,6 +23,7 @@ void worker2(void *arg) {
     uv_mutex_lock(&mutex);
     num++;
     if(num > 0){
+      uv_sleep(2000);
       uv_cond_signal(&cond);
     }
     uv_mutex_unlock(&mutex);
@@ -38,5 +39,6 @@ int main(int argc, char **argv) {
   uv_thread_create(&nthread2, worker2, NULL);
   uv_thread_join(&nthread1);
   uv_thread_join(&nthread2);
+  uv_cond_destroy(&cond);
   return 0;
 }

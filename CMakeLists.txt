@@ -21,6 +21,8 @@ foreach(SUBDIR ${SUBDIRS})
     if(INDEX EQUAL -1 AND IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR})
         file(GLOB DEMO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.c)
         if(DEMO_FILES)
+            # 生成伪目标
+            add_custom_target(phony-${SUBDIR})
             foreach(FILE ${DEMO_FILES})
                 # 提取文件的基本名称
                 get_filename_component(FILE_BASENAME ${FILE} NAME_WE)
@@ -31,6 +33,8 @@ foreach(SUBDIR ${SUBDIRS})
                 add_executable(${EXECUTABLE_NAME} ${FILE})
                 # 链接 libuv 库
                 target_link_libraries(${EXECUTABLE_NAME} PRIVATE $<IF:$<BOOL:${WIN32}>,$<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>,uv>)
+                # 将可执行文件添加到伪目标中
+                add_dependencies(phony-${SUBDIR} ${EXECUTABLE_NAME})
             endforeach()
         endif()
     endif()

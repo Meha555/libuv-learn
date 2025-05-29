@@ -1,10 +1,3 @@
-/*
- * @Author: jiejie
- * @Github: https://github.com/jiejieTop
- * @Date: 2020-04-17 19:44:48
- * @LastEditTime: 2020-04-17 19:52:40
- * @Description: the code belongs to jiejie, please keep the author information and source code according to the license.
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <uv.h>

@@ -46,4 +46,6 @@ int main(int argc, char **argv) {
   uv_thread_create(&consumer, do_consume, NULL);
   uv_thread_join(&producer);
   uv_thread_join(&producer);
+  uv_sem_destroy(&empty);
+  uv_sem_destroy(&full);
 }
