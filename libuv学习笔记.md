@@ -109,6 +109,10 @@ typedef struct uv_random_s uv_random_t;
 `
 - 取消句柄的 `uv_cancel()` 函数只适用于 `uv_fs_t/uv_geneaddrinfo_t/uv_getnameinfo_t/uv_work_t/uv_random_t` 请求，否则返回 `UV_EINVAL` 。
 
+**关于句柄关闭的坑**：
+- https://blog.coderzh.com/2022/04/03/libuv/
+- https://aheadsnail.github.io/2020/06/29/shi-yong-libuv-xiao-jie/#toc-heading-5
+
 #### 句柄的激活
 
 句柄的*active*状态：
@@ -178,6 +182,8 @@ libuv对系统信号进行的封装。如果创建了signal句柄并且start了�
 async句柄用于提供异步唤醒的功能， 比如在用户线程中唤醒主事件循环线程，并且触发对应的回调函数。
 
 从事件循环线程的处理过程可知，它在IO循环时会进入阻塞状态，而阻塞的具体时间则通过计算得到，那么在某些情况下，我们想要唤醒事件循环线程，就可以通过ansyc去操作，比如当线程池的线程处理完事件后，执行的结果是需要交给事件循环线程的，这时就需要唤醒事件循环线程，当然方法也是很简单，调用一下 `uv_async_send()` 函数通知事件循环线程即可。libuv线程池中的线程就是利用这个机制和主事件循环线程通讯。
+
+**主要用途就是唤醒事件循环线程让它做事，因为libuv不是线程安全的，不能在用户线程中发送数据（只允许在事件循环线程发送数据）**
 
 #### 结构
 
@@ -669,6 +675,19 @@ uv_loop_t* uv_default_loop(void) {
   return default_loop_ptr;
 }
 ```
+
+## 粘包/残包
+
+libuv提供的 `uv_buf_t` 是 libuv 中发送的数据包的单位：
+
+```c
+typedef struct uv_buf_t {
+  char* base;
+  size_t len;
+} uv_buf_t;
+```
+
+注意它只是用于libuv框架层的，使用 libuv 的 `uv_stream_t` 进行应用层数据收发时仍然可能粘包/残包。
 
 ## 关键代码分析
 

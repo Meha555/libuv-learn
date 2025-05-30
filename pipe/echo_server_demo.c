@@ -4,7 +4,7 @@
 #include <uv.h>
 
 #ifdef _WIN32
-#define PIPENAME "\\\\?\\pipe\\echo.sock" // Windows下命名管道必须以\\.\pipe\为前缀
+#define PIPENAME "\\\\.\\pipe\\echo.sock" // Windows下命名管道必须以\\.\pipe\为前缀
 #else
 #define PIPENAME "/tmp/echo.sock"
 #endif
@@ -22,9 +22,14 @@ void free_write_req(uv_write_t *req) {
     free(wr);
 }
 
-void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
+void alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
   buf->base = malloc(suggested_size);
   buf->len = suggested_size;
+}
+
+void close_cb(uv_handle_t *handle)
+{
+    free(handle);
 }
 
 void echo_write(uv_write_t *req, int status) {
@@ -45,7 +50,7 @@ void echo_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     if (nread < 0) {
         if (nread != UV_EOF)
             fprintf(stderr, "Read error %s\n", uv_err_name(nread));
-        uv_close((uv_handle_t*) client, NULL);
+        uv_close((uv_handle_t*) client, close_cb);
     }
 
     free(buf->base);
@@ -60,10 +65,10 @@ void on_new_connection(uv_stream_t *server, int status) {
     uv_pipe_t *client = (uv_pipe_t*) malloc(sizeof(uv_pipe_t));
     uv_pipe_init(server_loop, client, 0);
     if (uv_accept(server, (uv_stream_t*) client) == 0) {
-        uv_read_start((uv_stream_t*) client, alloc_buffer, echo_read);
+        uv_read_start((uv_stream_t*) client, alloc_cb, echo_read);
     }
     else {
-        uv_close((uv_handle_t*) client, NULL);
+        uv_close((uv_handle_t*) client, close_cb);
     }
 }
 

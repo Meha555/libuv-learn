@@ -19,9 +19,14 @@ void free_write_req(uv_write_t *req) {
     free(wr);
 }
 
-void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
+void alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
     buf->base = (char*) malloc(suggested_size); // 这个suggested_size挺好，不用自己预估一个缓冲区大小了
     buf->len = suggested_size;
+}
+
+void close_cb(uv_handle_t *handle)
+{
+    free(handle);
 }
 
 void echo_write(uv_write_t *req, int status) {
@@ -42,13 +47,13 @@ void echo_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     // nread might be 0, which does not indicate an error or EOF. This is equivalent to EAGAIN or EWOULDBLOCK under read(2).
     // if (nread == 0) {
     //     printf("Read again...\n");
-    //     uv_read_start((uv_stream_t*)client, alloc_buffer, echo_read);
+    //     uv_read_start((uv_stream_t*)client, alloc_cb, echo_read);
     //     return;
     // }
     if (nread < 0) {
         if (nread != UV_EOF)
             fprintf(stderr, "Read error %s\n", uv_err_name(nread));
-        uv_close((uv_handle_t*) client, NULL);
+        uv_close((uv_handle_t*) client, close_cb);
     }
 
     free(buf->base);
@@ -69,10 +74,10 @@ void on_new_connection(uv_stream_t *server, int status) {
         int len = sizeof(addr);
         uv_tcp_getpeername(client, (struct sockaddr*) &addr, &len);
         printf("client (%s:%d) connected success ...\n", inet_ntoa(addr.sin_addr), addr.sin_port);
-        uv_read_start((uv_stream_t*) client, alloc_buffer, echo_read);
+        uv_read_start((uv_stream_t*) client, alloc_cb, echo_read);
     }
     else {
-        uv_close((uv_handle_t*) client, NULL);
+        uv_close((uv_handle_t*) client, close_cb);
     }
 }
 

@@ -48,7 +48,7 @@ void on_connect(uv_connect_t *req, int status) {
 }
 
 // 分配缓冲区的回调函数
-void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
+void alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
     buf->base = (char *)malloc(suggested_size);
     buf->len = suggested_size;
 }
@@ -70,7 +70,7 @@ void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
 // 数据写完成后的回调函数
 void on_write(uv_write_t* req, int status) {
     if (status == 0) {
-        uv_read_start((uv_stream_t*)&client, alloc_buffer, on_read);
+        uv_read_start((uv_stream_t*)&client, alloc_cb, on_read);
     } else {
         if (status != UV_EOF) {
             fprintf(stderr, "Write error: %s\n", uv_strerror(status));
