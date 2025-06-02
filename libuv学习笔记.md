@@ -102,9 +102,10 @@ typedef struct uv_random_s uv_random_t;
 
 > https://docs.libuv.org/en/v1.x/handle.html
 
-最常用的 `uv_close()` ：关闭句柄。必须在句柄的内存被释放前调用，然后句柄的内存应该在 `close_cb` 回调中释放（所以在没有资源需要释放的情况下 `close_cb` 可以填 `NULL`）。
+最常用的 `uv_close()` ：关闭句柄。**必须在句柄的内存被释放前调用，然后句柄的内存应该在 `close_cb` 回调中释放，或者在那之后（所以在没有资源需要释放的情况下 `close_cb` 可以填 `NULL`）**。
 
 注意：
+- **每个handle都必须调用 `uv_close()`**
 - 官网文档有一句话：*对于"In-progress requests"如 `uv_connect_t`、`uv_write_t` 等，**请求会被取消并调用各自对应的回调，并携带错误 `UV_ECANCELED`**（注意这种情况不要重复释放内存）。*但事实上查阅 `uv_close()` 的实现，发现只有 `uv_tcp_t/uv_named_pipe_t/uv_tty_t/uv_udp_t/uv_poll_t/uv_timer_t/uv_prepare_t/uv_check_t/uv_idle_t/uv_async_t/uv_process_t/uv_fs_event_t/uv_fs_poll_t` 句柄才能使用这个函数，否则 abort 。
 `
 - 取消句柄的 `uv_cancel()` 函数只适用于 `uv_fs_t/uv_geneaddrinfo_t/uv_getnameinfo_t/uv_work_t/uv_random_t` 请求，否则返回 `UV_EINVAL` 。
@@ -688,6 +689,108 @@ typedef struct uv_buf_t {
 ```
 
 注意它只是用于libuv框架层的，使用 libuv 的 `uv_stream_t` 进行应用层数据收发时仍然可能粘包/残包。
+
+## 坑点
+
+### handle跨线程使用
+
+只有 `uv_async_send` 和 `uv_queue_work` 是可以在非loop线程调用，其他的句柄函数都必须在其loop所在的线程调用（如在回调中调用）。
+
+那么，想要跨线程触发一个动作，正确做法是loop线程持有一个 `uv_async_t` 在 `uv_async_send` 触发的回调函数中执行要需要执行的代码段。具体参考：https://blog.csdn.net/robinfoxnan/article/details/118364469
+
+### 正确退出事件循环
+
+libuv 的官方示例里，几乎都是正常的退出流程：各个 handle 都主动退出了，最后 uv_run 再退出。而实际遇到的情况可能是，handle 还处于有效的 ACTIVE 状态时需要退出，怎么办？调用 `uv_loop_close` ？不行，handle 还处于 ACTIVE 状态，`uv_loop_close` 会返回 `UV_EBUSY`。
+
+正确做法是：
+
+1. 应该通知各个模块把相关的 uv handle 都 close 掉。
+
+2. 调用 `uv_stop` 退出事件循环。
+
+3. 通过 uv_walk 遍历所有 handle，强制关闭掉来兜底。
+
+   ```c
+   uv_stop(loop);
+   
+   void ensure_closing(uv_handle_t* handle, void*) {
+     if (!uv_is_closing(handle)) {
+       uv_close(handle, nullptr);
+     }
+   }
+   
+   uv_walk(loop, ensure_closing, nullptr);
+   ```
+
+4. 调用 `uv_loop_close` 关闭事件循环。
+
+但是，问题又来了，这样的兜底 `uv_close` 并没有传 close 回调，那 handle 的内存又如何删除？假如有漏网之鱼，就让它泄露算了？好像也没有太好的办法，只能尽量做好 handle 管理，能主动进行 `uv_close`，而不是等到 `uv_walk` 里被兜底 close。
+
+接着又有另外一个问题，前面说到 `uv_close` 只是加入 loop 的 close 队列，并没有触发真正的 close 和回调。这时要确保这些 handle 被 close，则需要再次触发 `uv_run` 直到所有 handle close 完毕。
+
+```c
+for (;;)
+  if (uv_run(loop, UV_RUN_DEFAULT) == 0)
+    break;
+```
+
+uv 已经要退出了，但为了执行前面的 `uv__run_closing_handles`，又触发了 uv_run 的执行。假设哪里处理不好，其他线程又往 uv 线程抛了新的 handle 任务，这时就是灾难，很可能 crash 就会扑面而来。所以这里一定要做好状态管理，一旦进入 `uv_stop` 流程，其他线程也不应该再往 uv 抛任务。
+
+上面提到的问题不是只有新手才会犯，我们可以看看著名的 electron 项目，也是犯了同样的错误：
+
+https://github.com/electron/electron/pull/25332
+
+> This PR wraps the uv_async_t objects owned by NodeBindings and ElectronBindings inside a new UvHandle wrapper class which handles uv_handle_ts’ specific rules about destruction:
+>
+> [uv_close()] MUST be called on each handle before memory is released. Moreover, the memory can only be released in close_cb or after it has returned.
+>
+> The UvHandle wrapper class handles this close-delete twostep so that client code doesn’t have to think about it. Failure to finish closing before freeing is what caused the uv_walk() crash in #25248.
+
+为了确保 handle 正确被释放，electron 对 uv 的 handle 做了一层包装，很好的方法，可以借鉴一下：
+
+```cpp
+template <typename T,
+          typename std::enable_if<
+              // these are the C-style 'subclasses' of uv_handle_t
+              std::is_same<T, uv_async_t>::value ||
+              std::is_same<T, uv_check_t>::value ||
+              std::is_same<T, uv_fs_event_t>::value ||
+              std::is_same<T, uv_fs_poll_t>::value ||
+              std::is_same<T, uv_idle_t>::value ||
+              std::is_same<T, uv_pipe_t>::value ||
+              std::is_same<T, uv_poll_t>::value ||
+              std::is_same<T, uv_prepare_t>::value ||
+              std::is_same<T, uv_process_t>::value ||
+              std::is_same<T, uv_signal_t>::value ||
+              std::is_same<T, uv_stream_t>::value ||
+              std::is_same<T, uv_tcp_t>::value ||
+              std::is_same<T, uv_timer_t>::value ||
+              std::is_same<T, uv_tty_t>::value ||
+              std::is_same<T, uv_udp_t>::value>::type* = nullptr>
+class UvHandle {
+ public:
+  UvHandle() : t_(new T) {}
+  ~UvHandle() { reset(); }
+  T* get() { return t_; }
+  uv_handle_t* handle() { return reinterpret_cast<uv_handle_t*>(t_); }
+
+  void reset() {
+    auto* h = handle();
+    if (h != nullptr) {
+      DCHECK_EQ(0, uv_is_closing(h));
+      uv_close(h, OnClosed);
+      t_ = nullptr;
+    }
+  }
+
+ private:
+  static void OnClosed(uv_handle_t* handle) {
+    delete reinterpret_cast<T*>(handle);
+  }
+
+  T* t_ = {};
+};
+```
 
 ## 关键代码分析
 
