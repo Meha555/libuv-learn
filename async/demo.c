@@ -1,12 +1,4 @@
-/*
- * @Author: jiejie
- * @Github: https://github.com/jiejieTop
- * @Date: 2020-04-22 20:22:38
- * @LastEditTime: 2020-04-22 21:34:25
- * @Description: the code belongs to jiejie, please keep the author information and source code according to the license.
- */
 #include <stdio.h>
-
 #include <uv.h>
 
 void my_async_cb(uv_async_t* handle)

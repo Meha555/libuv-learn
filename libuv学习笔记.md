@@ -12,6 +12,10 @@
 
 >  [c 的网络I/O库总结（libevent,libuv,libev,libeio）-CSDN博客](https://blog.csdn.net/weixin_38597669/article/details/124918885) 
 
+libuv是一个高性能的，事件驱动的I/O库，并且提供了跨平台（如windows, linux）的API。
+
+libuv**强制**使用异步的，事件驱动的编程风格。它的核心工作是提供一个event-loop，还有基于I/O和其它事件通知的回调函数。
+
 libuv实际上是一个抽象层：
 
 - 对IO轮询机制：封装了底层的epoll、iocp等接口为 `uv__io_t`，对上层提供统一的接口
@@ -35,6 +39,18 @@ libuv的实现是一个很经典生产者-消费者模型。libuv在整个生命
 - **Request**：一个请求表示一个操作的开始，并在得到应答时完成请求。因此请求的生命周期是短暂的，**通常只维持在一个回调函数的时间（所以应该在回调函数里面释放申请的内存）**。请求通常对应着在句柄上的IO操作（如在TCP连接中发送数据）或不在句柄上操作（获取本机地址）。
 
 > 可以理解handle为xcb_xxx_t，而request为xcb_cookie_t
+
+对于libuv中的requests，开发者需要确保在进行异步任务提交时，**通过动态申请的request，要在loop所在线程执行的complete回调函数中释放**。用uv_work_t举例，代码可参考如下：
+
+```cpp
+uv_work_t* work = new uv_work_t;
+uv_queue_work(loop, work, [](uv_work_t* req) {
+    // 异步业务操作
+}, [](uv_work_t* req, int status) {
+    // 回调中释放内存
+    delete req;
+});
+```
 
 约定：以下本文将统称句柄和请求为句柄。两者不再区分。
 
@@ -107,12 +123,19 @@ typedef struct uv_random_s uv_random_t;
 注意：
 - **每个handle都必须调用 `uv_close()`**
 - 官网文档有一句话：*对于"In-progress requests"如 `uv_connect_t`、`uv_write_t` 等，**请求会被取消并调用各自对应的回调，并携带错误 `UV_ECANCELED`**（注意这种情况不要重复释放内存）。*但事实上查阅 `uv_close()` 的实现，发现只有 `uv_tcp_t/uv_named_pipe_t/uv_tty_t/uv_udp_t/uv_poll_t/uv_timer_t/uv_prepare_t/uv_check_t/uv_idle_t/uv_async_t/uv_process_t/uv_fs_event_t/uv_fs_poll_t` 句柄才能使用这个函数，否则 abort 。
-`
 - 取消句柄的 `uv_cancel()` 函数只适用于 `uv_fs_t/uv_geneaddrinfo_t/uv_getnameinfo_t/uv_work_t/uv_random_t` 请求，否则返回 `UV_EINVAL` 。
 
 **关于句柄关闭的坑**：
 - https://blog.coderzh.com/2022/04/03/libuv/
 - https://aheadsnail.github.io/2020/06/29/shi-yong-libuv-xiao-jie/#toc-heading-5
+
+**句柄需要遵守的原则**：
+
+1. 句柄的初始化工作应在事件循环的线程中进行。
+2. 若由于业务问题，句柄需要在其他工作线程初始化，在使用之前用原子变量判断是否初始化完成。
+3. 句柄在确定后续不再使用后，调用 `uv_close()` 将句柄从loop中摘除。
+
+> 在这里需要特别说明一下 `uv_close()` ，它被用来关闭一个handle，但是关闭handle的动作是异步的。调用 `uv_close()` 后，首先将要关闭的handle挂载到loop的 `closing_handles` 队列上，然后等待loop所在线程运行 `uv__run_closing_handles()` 函数。最后回调函数close_cb将会在loop的下一次迭代中执行。因此，释放内存等操作应该在close_cb中进行。并且这种异步的关闭操作会带来多线程问题，开发者需要谨慎处理uv_close的时序问题，并且保证在close_cb执行之前就不在使用handles的数据。
 
 #### 句柄的激活
 
@@ -166,6 +189,56 @@ libuv中有一个有意思的实现，所有idle、prepare以及check句柄相�
 - 由于是事件循环负责维护时间戳和调用回调，因此 `uv_timer_t` 无法脱离 `uv_loop_t` 使用。
 - `uv_loop_t` 在执行定时器回调之前和等待 I/O 唤醒之后，会立即更新其缓存的 `uv_loop_t::time` 当前时间戳。
 
+- 不要在多个线程中使用libuv的接口（uv_timer_start、uv_timer_stop和uv_timer_again）同时操作同一个loop的timer heap，否则将导致崩溃。如因业务需求往指定线程抛定时器，请使用uv_async_send线程安全函数实现。
+
+  ```cpp
+  // 错误示例
+  int main() {
+      uv_loop_t* loop = uv_default_loop();
+      uv_timer_t* timer = new uv_timer_t;
+  
+      uv_timer_init(loop, timer);
+      std::thread t1([&loop, &timer](){
+          uv_timer_start(timer, [](uv_timer_t* timer){
+              uv_timer_stop(timer);
+              uv_close((uv_handle_t*)timer, [](uv_handle_t* handle){
+                  delete (uv_timer_t*)handle;
+              });
+          }, 1000, 0);
+      });
+      uv_run(loop, UV_RUN_DEFAULT);
+      t1.join();
+  }
+  
+  // 正确示例
+  uv_async_t* async = new uv_async_t;
+  
+  static void async_cb(uv_async_t* handle)
+  {
+      auto loop = handle->loop;
+      uv_timer_t* timer = new uv_timer_t;
+      uv_timer_init(loop, timer);
+      uv_timer_start(timer, [](uv_timer_t* timer){
+          uv_timer_stop(timer);
+          // 关闭timer句柄
+          uv_close((uv_handle_t*)timer, [](uv_handle_t* handle){ delete (uv_timer_t*)handle; });
+      }, 1000, 0);
+      // 关闭async句柄
+      uv_close((uv_handle_t*)handle, [](uv_handle_t* handle){ delete (uv_async_t*)handle; });
+  }
+  int main() {
+  uv_loop_t* loop = uv_default_loop();
+      uv_async_init(loop, async, async_cb);
+      std::thread t([](){
+          uv_async_send(async);  // 在任意子线程中调用uv_async_send，通知主线程调用与async绑定的timer_cb
+      });
+      uv_run(loop, UV_RUN_DEFAULT);
+      t.join();
+  }
+  ```
+
+  
+
 ### signal句柄
 
 libuv对系统信号进行的封装。如果创建了signal句柄并且start了，那么当对应的信号到达时，libuv会调用对应的回调函数。
@@ -180,11 +253,7 @@ libuv对系统信号进行的封装。如果创建了signal句柄并且start了�
 
 ### async句柄
 
-async句柄用于提供异步唤醒的功能， 比如在用户线程中唤醒主事件循环线程，并且触发对应的回调函数。
-
-从事件循环线程的处理过程可知，它在IO循环时会进入阻塞状态，而阻塞的具体时间则通过计算得到，那么在某些情况下，我们想要唤醒事件循环线程，就可以通过ansyc去操作，比如当线程池的线程处理完事件后，执行的结果是需要交给事件循环线程的，这时就需要唤醒事件循环线程，当然方法也是很简单，调用一下 `uv_async_send()` 函数通知事件循环线程即可。libuv线程池中的线程就是利用这个机制和主事件循环线程通讯。
-
-**主要用途就是唤醒事件循环线程让它做事，因为libuv不是线程安全的，不能在用户线程中发送数据（只允许在事件循环线程发送数据）**
+async句柄用于提供异步唤醒的功能， 比如在用户线程中唤醒主事件循环线程，并且触发对应的回调函数【**即用作线程间通信的手段**】。
 
 #### 结构
 
@@ -199,6 +268,17 @@ struct uv_async_s {
   struct uv__queue queue; // 作为队列节点插入 loop->async_handles                \
   int pending; // 标记此async_cb已经在被执行，其他被唤醒的线程不要执行这个回调（这里会使用无锁编程）           \
 ```
+
+#### 线程间通信
+
+如果因为业务需要，必须在其他线程往loop线程抛任务，请使用uv_async_send函数：即在async句柄初始化时，注册一个回调函数，并在该回调中实现相应的操作，当调用uv_async_send时，在主线程上执行该回调函数。
+
+**主要用途就是唤醒事件循环线程让它做事，因为libuv不是线程安全的，不能在用户线程中发送数据（只允许在事件循环线程发送数据）**
+
+1. `uv_async_t` 从调用 `uv_async_init()` 开始后就一直处于活跃状态，除非用 `uv_close()` 将其关闭。
+2. `uv_async_t` 回调的执行顺序是严格按照 `uv_async_init()` 的初始化顺序来的，而非调用 `uv_async_send()` 的顺序。因此按照初始化的顺序来管理好时序问题是必要的。
+
+![image](https://img2024.cnblogs.com/blog/3077699/202506/3077699-20250626160425216-1958805953.png)
 
 #### 实现
 
@@ -492,7 +572,7 @@ static void uv__stream_io(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
 
 libuv为线程进行的跨平台封装（非常好，这样C语言使用线程就方便了）。线程运行的函数签名是 `void (*entry)(void *arg)` 。
 
-### 线程池
+### 线程池和异步任务
 
 libuv 提供了一个全局线程池（在所有 `uv_loop` 中共享），可用于运行用户代码并在循环线程中收到通知。此线程池在内部用于运行所有文件系统操作，以及 getaddrinfo 和 getnameinfo 请求。
 
@@ -503,13 +583,40 @@ libuv 提供了一个全局线程池（在所有 `uv_loop` 中共享），可用
 - `uv_work_t` ：任务request类型
 - `void (*uv_work_cb)(uv_work_t *req)` ：工作任务函数，在线程池中执行
 - `void (*uv_after_work_cb)(uv_work_t *req, int status)` ：任务完成回调函数，在主线程（事件循环所在线程）执行
-- `uv_queue_work()` ：向线程池中投递一个任务
+- `uv_queue_work()` ：向线程池中投递一个任务，从而在子线程中执行耗时操作，然后将结果回调到主线程上进行处理
 - `uv_cancel()` ：取消任务执行，会使得任务完成回调携带 `UV_ECANCELED`
 
 **注意**：
 
 - 线程池是延迟初始化的（第一次使用它时才预分配并创建线程，这和spdlog的相反）
+
 - 线程池中任务的执行需要自行保证线程安全
+
+- `work_cb` 与 `after_work_cb` 的执行有一个时序问题，只有 `work_cb` 执行完，libuv内部通过 `uv_async_send(loop->wq_async)` 触发fd事件，loop所在线程在下一次迭代中才会执行 `after_work_cb`。只有执行完 `after_work_cb` 时，与之相关的 `uv_work_t` 生命周期才算结束。 
+
+- 对于一些特定场景，比如对内存开销敏感的场景中，同一个request可以重复使用，前提是保证同一类任务之间的顺序，并且要确保最后一次调用`uv_queue_work` 时在其 `after_work_cb` 回调中做好对该request的释放工作：
+
+  ```cpp
+  uv_work_t* work = new uv_work_t;
+  uv_queue_work(loop, work,
+      [](uv_work_t* work) {/*do something*/},
+      [](uv_work_t* work, int status) {
+          // do something
+          uv_queue_work(loop, work,
+              [](...) {/*do something*/},
+              [](...) {
+                  //do something
+                  if (last_task) {  // 最后一个任务执行完以后，释放该request
+                      delete work;
+                  }
+          });
+      },
+  );
+  ```
+
+- `uv_queue_work` 函数仅用于抛异步任务，**异步任务的execute回调被提交到线程池后会经过调度执行，因此并不保证多次提交的任务及其回调按照时序关系执行**。 
+
+![image](https://img2024.cnblogs.com/blog/3077699/202506/3077699-20250626160441415-2044143660.png)
 
 ### 文件操作
 
@@ -538,7 +645,7 @@ libuv的事件循环用于对IO进行轮询，以便在IO就绪时执行相关�
 
 **注意**：
 
-- **是"one loop per thread"的，因此必须关联到单个线程上，且使用非阻塞套接字。【因此 `uv_loop_t` 相关的API都不是线程安全的，不应该跨线程使用 `uv_loop_t`】**
+- **使用 `uv_loop_init()` 接口初始化loop的线程和调用 `uv_run()` 的线程应保持一致，称为loop线程，并且对uvloop的所有非线程安全操作，均需保证与loop同线程。此外应当使用非阻塞套接字。【"one loop per thread"，因此 `uv_loop_t` 相关的API都不是线程安全的，不应该跨线程使用 `uv_loop_t`】**
 
 - libuv中文件操作是可以异步执行的（启动子线程），而网络IO总是同步的（单线程执行）
 - 对于文件I/O的操作，由于平台并未对文件I/O提供轮询机制，libuv通过线程池的方式阻塞他们，每个I/O将对应产生一个线程，并在线程中进行阻塞，当有数据可操作的时候解除阻塞，进而进行回调处理，因此libuv将维护一个线程池，线程池中可能创建了多个线程并阻塞它们。（文件操作不会是高并发的，所以这么做没问题）
@@ -562,7 +669,7 @@ libuv的事件循环用于对IO进行轮询，以便在IO就绪时执行相关�
 6. 计算轮询超时，在阻塞I/O之前，循环会计算阻塞的时间（保证能有唤醒时刻），并将这个I/O进入阻塞状态（如果可以的话，阻塞超时为0则表示不阻塞），这些是计算超时的规则：
 
    1. 如果使用 `UV_RUN_NOWAIT` 模式运行循环，则超时为0。
-   2. 如果要停止循环（uv_stop()被调用），则超时为0。
+   2. 如果要停止循环（`uv_stop()` 被调用），则超时为0。
    3. 如果没有活动的句柄或请求，则超时为0。
    4. 如果有任何空闲的句柄处于活动状态，则超时为0。
    5. 如果有任何要关闭的句柄，则超时为0。
@@ -576,9 +683,9 @@ libuv的事件循环用于对IO进行轮询，以便在IO就绪时执行相关�
 
 9. 在超时后更新下一次的循环时间，前提是通过 `UV_RUN_DEFAULT` 模式去运行这个循环。一共有3种运行模式：
 
-   - 默认模式 `UV_RUN_DEFAULT`：运行事件循环，直到不再有活动的和引用的句柄或请求为止。如果调用了 `uv_stop()`，且仍有活动句柄或请求，则返回非零。其他情况下返回 0。
-   - 单次阻塞模式 `UV_RUN_ONCE`：轮询一次I/O，如果没有待处理的回调，则进入阻塞状态。完成处理后（不再有活动的和引用的句柄或请求为止）返回零，不继续运行事件循环。【一定轮询一次】
-   - 单次不阻塞模式 `UV_RUN_NOWAIT`：轮询一次I/O，但如果没有待处理的回调，则不会阻塞，直接返回。【最多轮询1次】
+   - 默认模式 `UV_RUN_DEFAULT`：运行事件循环，直到不再有活动的和引用的句柄或请求为止。**如果调用了 `uv_stop()`，且仍有活动句柄或请求，则返回非零。其他情况下返回 0**。
+   - 单次阻塞模式 `UV_RUN_ONCE`：轮询一次I/O，如果没有待处理的回调则进入阻塞等待。完成处理后（不再有活动的和引用的句柄或请求为止）返回0，退出事件循环。【一定轮询一次，这个模式是认为loop中当前一定有事件发生】
+   - 单次不阻塞模式 `UV_RUN_NOWAIT`：轮询一次I/O，但如果没有待处理的回调则不会阻塞，直接返回。【最多轮询1次】
 
 ### uv_loop_t
 
@@ -636,7 +743,7 @@ struct uv_loop_s {
   unsigned int nfds;          // watcher中的fd个数                                                \
   struct uv__queue wq;            // 线程池中的线程处理完任务后把对应的结构体插入到wq队列                                            \
   uv_mutex_t wq_mutex;            // 控制wq队列互斥访问的互斥锁                                            \
-  uv_async_t wq_async;                   // 用于线程池和主线程通信的异步句柄                                     \
+  uv_async_t wq_async;            // 用于线程池中的工作线程和主线程通信的异步句柄                                     \
   uv_rwlock_t cloexec_lock;                                                   \
   uv_handle_t* closing_handles;        // closing阶段的队列，由uv_close()产生                                       \
   struct uv__queue process_handles;         // fork出来的进程队列                                  \
@@ -692,9 +799,25 @@ typedef struct uv_buf_t {
 
 ## 坑点
 
-### handle跨线程使用
+### handle跨线程使用（线程安全问题）
 
-只有 `uv_async_send` 和 `uv_queue_work` 是可以在非loop线程调用，其他的句柄函数都必须在其loop所在的线程调用（如在回调中调用）。
+线程安全函数：可以在非loop线程调用，其他的句柄函数都必须在其loop所在的线程调用（如在回调中调用）。
+
+- `uv_async_send()`
+- `uv_thread_create()`
+- 锁相关的操作，如 `uv_mutex_lock()`、`uv_mutex_unlock()` 等等。
+
+非线程安全函数：
+
+- `uv_queue_work()`：投递异步任务
+- `uv_os_unsetenv()`：删除环境变量
+- `uv_os_setenv()`：设置环境变量
+- `uv_os_getenv()`：获取环境变量
+- `uv_os_environ()`：检索所有的环境变量
+- `uv_os_tmpdir()`：获取临时目录
+- `uv_os_homedir()`：获取家目录
+
+**提示：所有形如 `uv_xxx_init()` 的函数，即使它是以线程安全的方式实现的，但使用时要注意避免多个线程同时调用 `uv_xxx_init()`，否则它依旧会引起多线程资源竞争的问题。最好的方式是在事件循环线程中调用该函数。**
 
 那么，想要跨线程触发一个动作，正确做法是loop线程持有一个 `uv_async_t` 在 `uv_async_send` 触发的回调函数中执行要需要执行的代码段。具体参考：https://blog.csdn.net/robinfoxnan/article/details/118364469
 
@@ -706,9 +829,9 @@ libuv 的官方示例里，几乎都是正常的退出流程：各个 handle 都
 
 1. 应该通知各个模块把相关的 uv handle 都 close 掉。
 
-2. 调用 `uv_stop` 退出事件循环。
+2. 调用 `uv_stop()` 停止事件循环。
 
-3. 通过 uv_walk 遍历所有 handle，强制关闭掉来兜底。
+3. 通过 `uv_walk()` 遍历所有 handle，强制关闭掉来兜底。
 
    ```c
    uv_stop(loop);

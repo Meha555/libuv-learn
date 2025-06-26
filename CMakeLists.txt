@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(libuv-learn)
+project(libuv-learn
+    LANGUAGES C CXX
+)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -19,7 +21,7 @@ foreach(SUBDIR ${SUBDIRS})
     # 检查子文件夹是否在 .gitignore 中
     list(FIND GITIGNORE_LINES ${SUBDIR} INDEX)
     if(INDEX EQUAL -1 AND IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR})
-        file(GLOB DEMO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.c)
+        file(GLOB DEMO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.c ${CMAKE_CURRENT_SOURCE_DIR}/${SUBDIR}/*.cpp)
         if(DEMO_FILES)
             # 生成伪目标
             add_custom_target(phony-${SUBDIR})
