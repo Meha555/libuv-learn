@@ -194,12 +194,12 @@ libuv中有一个有意思的实现，所有idle、prepare以及check句柄相�
   ```cpp
   // 错误示例
   int main() {
-      uv_loop_t* loop = uv_default_loop();
+      uv_loop_t* loop = uv_default_loop(); // 在主线程中获得了loop
       uv_timer_t* timer = new uv_timer_t;
   
-      uv_timer_init(loop, timer);
+      uv_timer_init(loop, timer); // timer在主线程初始化，所以timer属于主线程
       std::thread t1([&loop, &timer](){
-          uv_timer_start(timer, [](uv_timer_t* timer){
+          uv_timer_start(timer, [](uv_timer_t* timer){ // 但是直接在子线程中操作了timer，此时可能造成uv的事件循环线程和t1线程对timer的访问产生竞争
               uv_timer_stop(timer);
               uv_close((uv_handle_t*)timer, [](uv_handle_t* handle){
                   delete (uv_timer_t*)handle;
@@ -213,7 +213,7 @@ libuv中有一个有意思的实现，所有idle、prepare以及check句柄相�
   // 正确示例
   uv_async_t* async = new uv_async_t;
   
-  static void async_cb(uv_async_t* handle)
+  static void async_cb(uv_async_t* handle) // 此函数始终在主线程执行
   {
       auto loop = handle->loop;
       uv_timer_t* timer = new uv_timer_t;
@@ -227,10 +227,10 @@ libuv中有一个有意思的实现，所有idle、prepare以及check句柄相�
       uv_close((uv_handle_t*)handle, [](uv_handle_t* handle){ delete (uv_async_t*)handle; });
   }
   int main() {
-  uv_loop_t* loop = uv_default_loop();
+  	uv_loop_t* loop = uv_default_loop(); // 在主线程中获得了loop
       uv_async_init(loop, async, async_cb);
       std::thread t([](){
-          uv_async_send(async);  // 在任意子线程中调用uv_async_send，通知主线程调用与async绑定的timer_cb
+          uv_async_send(async);  // 在任意子线程中调用uv_async_send这个线程安全的接口，通知主线程调用与async绑定的timer_cb
       });
       uv_run(loop, UV_RUN_DEFAULT);
       t.join();
@@ -566,7 +566,36 @@ static void uv__stream_io(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
 
 #### uv_pipe_t
 
+Pipe句柄在Unix上提供了对本地域套接字的抽象，在Windows上提供了命名管道。它是`uv_stream_t`的“子类”。管道的用途很多，可以用来读写文件，还可以用来做进程间的通信。
 
+```c
+int uv_pipe_init(uv_loop_t *loop, uv_pipe_t *handle, int ipc)
+```
+
+这里的第三个参数 `ipc` 是一个布尔值，为1表示这个pipe可以传递文件描述符，为0表示不能传递文件描述符。且只有客户端可以设置为1，服务端应始终设置为0。
+
+### uv_poll_t
+
+Poll句柄用于监视文件描述符的可读性、可写性和断开连接，类似于[`poll(2)`](http://linux.die.net/man/2/poll)的目的。
+
+Poll句柄的目的是支持集成外部库，这些库依赖于事件循环来通知套接字状态的更改，比如`c-ares`或`libssh2`。不建议将 `uv_poll_t` 用于任何其他目的——因为像`uv_tcp_t`、`uv_udp_t`等提供了一个比`uv_poll_t`更快、更可伸缩的实现，尤其是在Windows上用的是iocp。
+
+可能轮询处理偶尔会发出信号，表明文件描述符是可读或可写的，即使它不是。因此，当用户试图从fd读取或写入时，应该总是准备再次处理EAGAIN错误或类似的EAGAIN错误。
+
+同一个套接字不能有多个活跃的Poll句柄，因为这可能会导致libuv出现`busyloop`或其他故障。
+
+当活跃的Poll句柄轮询文件描述符时，用户不应关闭该文件描述符。否则可能导致句柄报告错误，但也可能开始轮询另一个套接字。但是可以在调用`uv_poll_stop()`或`uv_close()`之后立即安全地关闭fd。
+
+下面罗列的是轮询的事件类型：
+
+```c
+enum uv_poll_event {
+    UV_READABLE = 1,
+    UV_WRITABLE = 2,
+    UV_DISCONNECT = 4,
+    UV_PRIORITIZED = 8
+};
+```
 
 ### 线程句柄和进程句柄
 
@@ -637,7 +666,13 @@ libuv 提供了一个全局线程池（在所有 `uv_loop` 中共享），可用
 
 #### 监听文件系统变化
 
+##### uv_fs_event_t
 
+FS事件句柄允许用户监视一个给定的路径的更新事件，例如，如果文件被重命名或其中有一个通用更改。
+
+##### uv_fs_poll_t
+
+FS轮询句柄允许用户监视给定的更改路径。与`uv_fs_event_t`不同，fs poll句柄使用`stat`检测文件何时发生了更改，这样它们就可以在不支持fs事件句柄的文件系统上工作。
 
 ## 事件循环
 
