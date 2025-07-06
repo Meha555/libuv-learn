@@ -566,7 +566,32 @@ static void uv__stream_io(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
 
 #### uv_pipe_t
 
+Pipe句柄在Unix上提供了对本地域套接字的抽象，在Windows上提供了命名管道。它是`uv_stream_t`的“子类”。管道的用途很多，可以用来读写文件，还可以用来做进程间的通信。
 
+
+
+### uv_poll_t
+
+Poll句柄用于监视文件描述符的可读性、可写性和断开连接，类似于[`poll(2)`](http://linux.die.net/man/2/poll)的目的。
+
+Poll句柄的目的是支持集成外部库，这些库依赖于事件循环来通知套接字状态的更改，比如`c-ares`或`libssh2`。不建议将 `uv_poll_t` 用于任何其他目的——因为像`uv_tcp_t`、`uv_udp_t`等提供了一个比`uv_poll_t`更快、更可伸缩的实现，尤其是在Windows上用的是iocp。
+
+可能轮询处理偶尔会发出信号，表明文件描述符是可读或可写的，即使它不是。因此，当用户试图从fd读取或写入时，应该总是准备再次处理EAGAIN错误或类似的EAGAIN错误。
+
+同一个套接字不能有多个活跃的Poll句柄，因为这可能会导致libuv出现`busyloop`或其他故障。
+
+当活跃的Poll句柄轮询文件描述符时，用户不应关闭该文件描述符。否则可能导致句柄报告错误，但也可能开始轮询另一个套接字。但是可以在调用`uv_poll_stop()`或`uv_close()`之后立即安全地关闭fd。
+
+下面罗列的是轮询的事件类型：
+
+```c
+enum uv_poll_event {
+    UV_READABLE = 1,
+    UV_WRITABLE = 2,
+    UV_DISCONNECT = 4,
+    UV_PRIORITIZED = 8
+};
+```
 
 ### 线程句柄和进程句柄
 
@@ -637,7 +662,13 @@ libuv 提供了一个全局线程池（在所有 `uv_loop` 中共享），可用
 
 #### 监听文件系统变化
 
+##### uv_fs_event_t
 
+FS事件句柄允许用户监视一个给定的路径的更新事件，例如，如果文件被重命名或其中有一个通用更改。
+
+##### uv_fs_poll_t
+
+FS轮询句柄允许用户监视给定的更改路径。与`uv_fs_event_t`不同，fs poll句柄使用`stat`检测文件何时发生了更改，这样它们就可以在不支持fs事件句柄的文件系统上工作。
 
 ## 事件循环
 
