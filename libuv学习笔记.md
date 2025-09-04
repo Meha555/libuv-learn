@@ -574,6 +574,11 @@ int uv_pipe_init(uv_loop_t *loop, uv_pipe_t *handle, int ipc)
 
 这里的第三个参数 `ipc` 是一个布尔值，为1表示这个pipe可以传递文件描述符，为0表示不能传递文件描述符。且只有客户端可以设置为1，服务端应始终设置为0。
 
+**注意**：
+
+- 在 `uv_pipe_init()` 时不会创建管道，而是在 `uv_pipe_connect` 时才创建管道；
+- 如果 `uv_pipe_connect()` 失败（从其回调的第二个参数可以看出），则应当 `uv_close()` 这个管道（自然是在 `uv_pipe_connect()` 的回调中调用），然后可以在 `uv_close()` 的回调中尝试重连（即 `uv_pipe_init()` + `uv_pipe_connect()` ）。此问题是因为 `uv_pipe_connect()` 在第一次调用时，会认为连接已成功，置 `UV_HANLDE_CONNECTION` 标志（Windows）。详见libuv-learn的echo_client_demo.c
+
 ### uv_poll_t
 
 Poll句柄用于监视文件描述符的可读性、可写性和断开连接，类似于[`poll(2)`](http://linux.die.net/man/2/poll)的目的。
