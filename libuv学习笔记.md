@@ -738,6 +738,7 @@ int uv_pipe_init(uv_loop_t *loop, uv_pipe_t *handle, int ipc)
 
 **注意**：
 
+- `uv_pipe_init()` 创建管道时，必须保证当前进程在管道文件所在目录具有可读写权限。否则会报错 `UV_EBUSY`
 - 在 `uv_pipe_init()` 时不会创建管道，而是在 `uv_pipe_connect` 时才创建管道；
 - 如果 `uv_pipe_connect()` 失败（从其回调的第二个参数可以看出），则应当 `uv_close()` 这个管道（自然是在 `uv_pipe_connect()` 的回调中调用），然后可以在 `uv_close()` 的回调中尝试重连（即 `uv_pipe_init()` + `uv_pipe_connect()` ）。此问题是因为 `uv_pipe_connect()` 在第一次调用时，会认为连接已成功，置 `UV_HANLDE_CONNECTION` 标志（Windows）。详见libuv-learn的echo_client_demo.c
 
