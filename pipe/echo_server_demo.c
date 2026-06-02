@@ -72,10 +72,9 @@ void on_new_connection(uv_stream_t *server, int status) {
     }
 }
 
-void remove_sock(int sig) {
+void remove_sock() {
     uv_fs_t req;
     uv_fs_unlink(server_loop, &req, PIPENAME, NULL);
-    exit(0);
 }
 
 int main() {
@@ -84,7 +83,7 @@ int main() {
     uv_pipe_t server;
     uv_pipe_init(server_loop, &server, 0);
 
-    signal(SIGINT, remove_sock);
+    atexit(remove_sock);
 
     int r;
     if ((r = uv_pipe_bind(&server, PIPENAME))) {
