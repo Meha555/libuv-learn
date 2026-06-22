@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <uv.h>
+#include <assert.h>
 
 void idle_cb(uv_idle_t *idle) {
     printf("idle callback\n");
@@ -33,7 +34,8 @@ int main() {
     // NOTE 如果这里是单发定时器，则其超时回调中不调用uv_timer_stop也是可以的
     uv_timer_start(&timer, timer_cb, 1000, 1000);
 
-    uv_run(loop, UV_RUN_DEFAULT);
+    assert(uv_run(loop, UV_RUN_DEFAULT) == 0);
+    // 我们可以确定此时没有活跃句柄，所以无需优雅退出
 
     printf("after uv_run\n");
     uv_loop_close(loop);
