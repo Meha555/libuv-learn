@@ -90,6 +90,8 @@ int main() {
         fprintf(stderr, "Bind error %s\n", uv_err_name(r));
         return 1;
     }
+    // 允许管道被其他进程读写（否则以Windows服务模式启动的服务器将无法被非管理员启动的客户端连接）
+    uv_pipe_chmod(&server, UV_READABLE | UV_WRITABLE);
     if ((r = uv_listen((uv_stream_t*) &server, 128, on_new_connection))) {
         fprintf(stderr, "Listen error %s\n", uv_err_name(r));
         return 2;
